@@ -38,11 +38,12 @@ class AjustosViewModel(application: Application) : AndroidViewModel(application)
     /**
      * Guarda la MAC en el archivo privado settings.xml
      */
-    fun guardarDispositivoSeleccionado(mac: String) {
+    fun guardarDispositivoSeleccionado(mac: String, name: String) {
         // Accedemos a SharedPreferences (el archivo físico settings.xml)
         val sharedPrefs = getApplication<Application>().getSharedPreferences("settings", Context.MODE_PRIVATE)
 
         // Editamos y guardamos la dirección MAC con la clave "mac_configurada"
         sharedPrefs.edit().putString("mac_configurada", mac).apply()
+        sharedPrefs.edit().putString("nombre_configurado", name).apply()
     }
 }
