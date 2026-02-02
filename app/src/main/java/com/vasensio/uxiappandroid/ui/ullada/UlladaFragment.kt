@@ -1,233 +1,189 @@
 package com.vasensio.uxiappandroid.ui.ullada
 
-import android.bluetooth.BluetoothGattDescriptor
-import kotlin.collections.filter
-import kotlin.collections.toTypedArray
-import android.Manifest
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
+import android.bluetooth.*
+import android.content.ContentValues
 import android.content.Context
-import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
+import android.util.Base64
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.navigation.fragment.findNavController
-import com.vasensio.uxiappandroid.R // Assegura't d'importar el teu R
 import com.vasensio.uxiappandroid.databinding.FragmentUlladaBinding
+import com.vasensio.bluetooth_list_recyclerview.BLEconnDialog
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 
 class UlladaFragment : Fragment() {
-
     private var _binding: FragmentUlladaBinding? = null
     private val binding get() = _binding!!
 
-    // Codis per a sol·licituds de permisos
-    private val REQUEST_CODE_BLUETOOTH_PERMISSIONS = 101
-    private val REQUEST_CODE_WRITE_STORAGE = 102
-
-    // Variables de Bluetooth
-    private lateinit var bluetoothAdapter: BluetoothAdapter
     private var bluetoothGatt: BluetoothGatt? = null
+    private var activeDialog: BLEconnDialog? = null
+    private val handler = Handler(Looper.getMainLooper())
 
-    // UUIDs del servei i característiques (AJUSTA'LS ALS DEL TEU ESP32)
+    private val receivedData = ByteArrayOutputStream()
+    private var isReceiving = false
+    private var totalSize = 0
+
     private val SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
-    private val IMAGE_REQUEST_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
-    private val IMAGE_DATA_CHARACTERISTIC_UUID = UUID.fromString("a3dd5150-4828-4b06-8b30-1b2be6c22c10")
-    private val imageBuffer = mutableListOf<Byte>()
+    private val CHAR_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
+    private val DESCRIPTOR_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentUlladaBinding.inflate(inflater, container, false)
         return binding.root
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-
-        // Inicialització del Bluetooth Adapter
-        val bluetoothManager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        bluetoothAdapter = bluetoothManager.adapter
-
         setupUI()
-        checkPermissionsAndConnect()
+
+        binding.btnRequestImage.setOnClickListener {
+            val prefs = requireContext().getSharedPreferences("settings", Context.MODE_PRIVATE)
+            val mac = prefs.getString("mac_configurada", null) ?: return@setOnClickListener
+            val manager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val device = manager.adapter.getRemoteDevice(mac)
+
+            activeDialog = BLEconnDialog(requireContext(), device.name ?: "ESP32", device.address)
+            activeDialog?.show()
+
+            if (bluetoothGatt == null) {
+                activeDialog?.tvStatus?.text = "Connectant..."
+                bluetoothGatt = device.connectGatt(requireContext(), false, gattCallback)
+            } else {
+                requestImage()
+            }
+        }
     }
 
     private fun setupUI() {
-        // Lògica per actualitzar el text amb la MAC guardada
         val prefs = requireContext().getSharedPreferences("settings", Context.MODE_PRIVATE)
         val mac = prefs.getString("mac_configurada", null)
-        val name = prefs.getString("nombre_configurado", null)
-        binding.textUllada.text = if (mac.isNullOrEmpty()) {
-            "Cap dispositiu configurat"
-        } else {
-            "Dispositiu: $name ($mac)"
-        }
-
-    }
-
-    // --- LÒGICA DE CONNEXIÓ BLUETOOTH ---
-
-    private fun checkPermissionsAndConnect() {
-        val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
-        } else {
-            listOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN, Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-
-        val permissionsToRequest = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(requireContext(), it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (permissionsToRequest.isEmpty()) {
-            startAutoConnection()
-        } else {
-            ActivityCompat.requestPermissions(requireActivity(), permissionsToRequest.toTypedArray(), REQUEST_CODE_BLUETOOTH_PERMISSIONS)
-        }
-    }
-
-    private fun startAutoConnection() {
-        val prefs = requireContext().getSharedPreferences("settings", Context.MODE_PRIVATE)
-        val macAddress = prefs.getString("mac_configurada", null)
-
-        if (!bluetoothAdapter.isEnabled) {
-            Toast.makeText(context, "Activa el Bluetooth", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val device: BluetoothDevice? = try {
-            bluetoothAdapter.getRemoteDevice(macAddress)
-        } catch (e: IllegalArgumentException) {
-            null
-        }
-
-        if (device == null) {
-            Toast.makeText(context, "L'adreça MAC guardada no és vàlida", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        Log.d("UlladaFragment", "Intentant connectar amb ${device.name} (${device.address})")
-        // El 'false' en el tercer paràmetre indica que no és una connexió automàtica post-desconnexió.
-        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            bluetoothGatt = device.connectGatt(context, false, gattCallback)
-        }
+        binding.btnRequestImage.isEnabled = !mac.isNullOrEmpty()
+        binding.textUllada.text = if (mac.isNullOrEmpty()) "Sense dispositiu" else "Dispositiu: $mac"
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            val deviceName = gatt.device.name ?: gatt.device.address
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    Log.i("GattCallback", "Connectat a $deviceName")
-                    activity?.runOnUiThread { Toast.makeText(context, "Connectat a $deviceName", Toast.LENGTH_SHORT).show() }
-                    bluetoothGatt = gatt
-                    gatt.discoverServices()
-                }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    Log.i("GattCallback", "Desconnectat de $deviceName")
-                    activity?.runOnUiThread { Toast.makeText(context, "Desconnectat", Toast.LENGTH_SHORT).show() }
-                    bluetoothGatt?.close()
+            handler.post {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    activeDialog?.tvStatus?.text = "Configurant MTU..."
+                    gatt.requestMtu(517)
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     bluetoothGatt = null
+                    activeDialog?.tvStatus?.text = "Desconnectat"
                 }
             }
         }
 
         @SuppressLint("MissingPermission")
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            gatt.discoverServices()
+        }
+
+        @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.i("GattCallback", "Serveis descoberts amb èxit")
-                // Activa les notificacions per a la característica de dades d'imatge
-                enableImageDataNotifications(gatt)
-            } else {
-                Log.w("GattCallback", "Error en descobrir serveis: $status")
+            val service = gatt.getService(SERVICE_UUID)
+            val characteristic = service?.getCharacteristic(CHAR_UUID)
+
+            if (characteristic != null) {
+                // ACTIVAR NOTIFICACIONES (CRUCIAL)
+                gatt.setCharacteristicNotification(characteristic, true)
+                val descriptor = characteristic.getDescriptor(DESCRIPTOR_UUID)
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                gatt.writeDescriptor(descriptor)
+
+                handler.post { activeDialog?.tvStatus?.text = "Llest! Demanant foto..." }
+                // No pedimos la foto aquí, esperamos a que el descriptor se escriba
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            // Una vez que las notificaciones están activas, pedimos la foto
+            requestImage()
+        }
+
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (characteristic.uuid == CHAR_UUID) {
+                val data = characteristic.value
+                handler.post {
+                    // SEÑAL DE FIN [255, 255, 255, 255]
+                    if (data.size == 4 && data.all { it == (-1).toByte() }) {
+                        if (isReceiving) processFinalImage()
+                    }
+                    // SEÑAL DE INICIO (TAMAÑO)
+                    else if (!isReceiving && data.size == 4) {
+                        totalSize = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8) or
+                                ((data[2].toInt() and 0xFF) shl 16) or ((data[3].toInt() and 0xFF) shl 24)
+                        isReceiving = true
+                        receivedData.reset()
+                        activeDialog?.tvStatus?.text = "Rebent dades..."
+                    }
+                    // DATOS (CHUNKS)
+                    else if (isReceiving) {
+                        receivedData.write(data)
+                        activeDialog?.updateProgress(receivedData.size(), totalSize)
+                        if (receivedData.size() >= totalSize) processFinalImage()
+                    }
+                }
             }
         }
     }
 
-    // --- LÒGICA DE RECEPCIÓ D'IMATGE ---
-
-    @SuppressLint("MissingPermission")
-    private fun enableImageDataNotifications(gatt: BluetoothGatt) {
-        val service = gatt.getService(SERVICE_UUID)
-        val characteristic = service?.getCharacteristic(IMAGE_DATA_CHARACTERISTIC_UUID)
-
-        if (characteristic == null) {
-            Log.e("Notifications", "La característica de dades d'imatge no s'ha trobat!")
-            return
+    private fun processFinalImage() {
+        isReceiving = false
+        try {
+            val rawStr = receivedData.toString("UTF-8").trim()
+            val cleanBase64 = rawStr.substringAfterLast(",").trim()
+            val bytes = Base64.decode(cleanBase64, Base64.DEFAULT)
+            saveToUxiaAlbum(bytes)
+        } catch (e: Exception) {
+            Log.e("BLE", "Error en Base64")
         }
-
-        gatt.setCharacteristicNotification(characteristic, true)
-        // Descriptor estàndard per a notificacions (Client Characteristic Configuration)
-        val descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        gatt.writeDescriptor(descriptor)
-        Log.i("Notifications", "Notificacions activades per a la imatge.")
     }
 
-    @SuppressLint("MissingPermission")
-    private fun requestImageFromESP32() {
-        val gatt = bluetoothGatt ?: run {
-            Toast.makeText(context, "No estàs connectat a cap dispositiu", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val service = gatt.getService(SERVICE_UUID)
-        val characteristic = service?.getCharacteristic(IMAGE_REQUEST_CHARACTERISTIC_UUID)
-
-        if (characteristic == null) {
-            Toast.makeText(context, "La característica per demanar la imatge no existeix!", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        imageBuffer.clear() // Neteja el buffer abans de cada nova petició
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        characteristic.value = "GET_IMAGE".toByteArray() // Envia una comanda
-
-        if (gatt.writeCharacteristic(characteristic)) {
-            Log.i("ImageRequest", "Petició d'imatge enviada correctament.")
-            activity?.runOnUiThread {
-                Toast.makeText(context, "Demanant imatge...", Toast.LENGTH_SHORT).show()
+    private fun saveToUxiaAlbum(bytes: ByteArray) {
+        val filename = "UXIA_${System.currentTimeMillis()}.jpg"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/UXIA")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
             }
-        } else {
-            Log.e("ImageRequest", "Error en enviar la petició d'imatge.")
-            activity?.runOnUiThread {
-                Toast.makeText(context, "Error al demanar la imatge", Toast.LENGTH_SHORT).show()
+        }
+        val uri = requireContext().contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        uri?.let { targetUri ->
+            requireContext().contentResolver.openOutputStream(targetUri).use { it?.write(bytes) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                requireContext().contentResolver.update(targetUri, values, null, null)
+            }
+            handler.post {
+                activeDialog?.showImage(targetUri)
+                binding.btnRequestImage.text = "FER UNA ALTRA FOTO"
             }
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Quan tornem a aquesta pestanya, intenta connectar de nou si no estàs connectat.
-        if (bluetoothGatt == null) {
-            checkPermissionsAndConnect()
-        }
-    }
-
     @SuppressLint("MissingPermission")
-    override fun onPause() {
-        super.onPause()
-        // Desconnecta per estalviar bateria quan l'usuari surt de la pestanya
-        bluetoothGatt?.close()
-        bluetoothGatt = null
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
+    private fun requestImage() {
+        val char = bluetoothGatt?.getService(SERVICE_UUID)?.getCharacteristic(CHAR_UUID)
+        char?.let {
+            it.value = "GET_IMAGE".toByteArray()
+            bluetoothGatt?.writeCharacteristic(it)
+        }
     }
 }

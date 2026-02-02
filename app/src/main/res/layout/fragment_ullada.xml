@@ -19,4 +19,31 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginTop="16dp"
+        app:layout_constraintTop_toBottomOf="@id/text_ullada"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <Button
+            android:id="@+id/btn_request_image"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Rebre imatge"
+            android:enabled="false" />
+
+        <Button
+            android:id="@+id/btn_go_settings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Anar a Ajustos"
+            android:visibility="gone"
+            android:layout_marginStart="8dp" />
+
+    </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>
