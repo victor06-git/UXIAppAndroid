@@ -45,6 +45,7 @@ class UlladaFragment : Fragment() {
         return binding.root
     }
 
+    @SuppressLint("MissingPermission")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         setupUI()
@@ -127,13 +128,13 @@ class UlladaFragment : Fragment() {
             }*/
 
             binding.btnRequestImage.setOnClickListener {
-                // Es como decirle al sistema: "Ejecuta el destino que definimos en el XML"
                 findNavController().navigate(R.id.navigation_ajustos)
             }
         }
     }
 
     // Mueve la lógica de conexión aquí para que no se mezcle
+    @SuppressLint("Missingpermission")
     private fun iniciarConexionBLE(mac: String) {
         val manager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val device = manager.adapter.getRemoteDevice(mac)
