@@ -17,8 +17,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
 import com.vasensio.uxiappandroid.databinding.FragmentUlladaBinding
 import com.vasensio.bluetooth_list_recyclerview.BLEconnDialog
+import com.vasensio.uxiappandroid.R
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 
@@ -65,12 +67,88 @@ class UlladaFragment : Fragment() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Al volver de Ajustes, comprobamos de nuevo el estado
+        setupUI()
+    }
+
     private fun setupUI() {
         val prefs = requireContext().getSharedPreferences("settings", Context.MODE_PRIVATE)
-        val mac = prefs.getString("mac_configurada", null)
-        binding.btnRequestImage.isEnabled = !mac.isNullOrEmpty()
-        binding.textUllada.text = if (mac.isNullOrEmpty()) "Sense dispositiu" else "Dispositiu: $mac"
+        val macConfigurada = prefs.getString("mac_configurada", null)
+
+        val bluetoothManager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val bluetoothAdapter = bluetoothManager.adapter
+
+        // 1. SIN CONFIGURACIÓN EN LA APP
+        if (macConfigurada.isNullOrEmpty()) {
+            binding.btnRequestImage.text = "CONFIGURAR APP"
+            binding.textUllada.text = "Falta configurar la MAC"
+            binding.btnRequestImage.setOnClickListener {
+                // Aquí navegas a tu fragment de ajustes interno
+                Toast.makeText(context, "Ves a Ajustos de l'aplicació", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+
+        // 2. BLUETOOTH APAGADO
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            binding.btnRequestImage.isEnabled = false
+            binding.textUllada.text = "Activa el Bluetooth"
+            return
+        }
+
+        // 3. COMPROBAR VINCULACIÓN (BONDED)
+        @SuppressLint("MissingPermission")
+        val dispositivosVinculados = bluetoothAdapter.bondedDevices
+        val estaVinculado = dispositivosVinculados.any { it.address.equals(macConfigurada, ignoreCase = true) }
+
+        if (estaVinculado) {
+            // CASO OK: VINCULADO
+            binding.btnRequestImage.isEnabled = true
+            binding.btnRequestImage.text = "REBRE IMATGE"
+            binding.textUllada.text = "Dispositiu: $macConfigurada"
+
+            // El click aquí SÍ abre el proceso de conexión y el diálogo
+            binding.btnRequestImage.setOnClickListener {
+                iniciarConexionBLE(macConfigurada)
+            }
+        } else {
+            // CASO ERROR: NO VINCULADO
+            binding.btnRequestImage.isEnabled = true
+            binding.btnRequestImage.text = "ANAR A AJUSTOS" // Texto claro
+            binding.textUllada.text = "L'ESP32 no està vinculat al telèfon"
+
+            // El click aquí NO abre el diálogo, abre los AJUSTES DEL SISTEMA
+
+            /*binding.btnRequestImage.setOnClickListener {
+                val intent = android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                startActivity(intent)
+            }*/
+
+            binding.btnRequestImage.setOnClickListener {
+                // Es como decirle al sistema: "Ejecuta el destino que definimos en el XML"
+                findNavController().navigate(R.id.navigation_ajustos)
+            }
+        }
     }
+
+    // Mueve la lógica de conexión aquí para que no se mezcle
+    private fun iniciarConexionBLE(mac: String) {
+        val manager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val device = manager.adapter.getRemoteDevice(mac)
+
+        activeDialog = BLEconnDialog(requireContext(), device.name ?: "ESP32", device.address)
+        activeDialog?.show()
+
+        if (bluetoothGatt == null) {
+            activeDialog?.tvStatus?.text = "Connectant..."
+            bluetoothGatt = device.connectGatt(requireContext(), false, gattCallback)
+        } else {
+            requestImage()
+        }
+    }
+
 
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
@@ -104,7 +182,6 @@ class UlladaFragment : Fragment() {
                 gatt.writeDescriptor(descriptor)
 
                 handler.post { activeDialog?.tvStatus?.text = "Llest! Demanant foto..." }
-                // No pedimos la foto aquí, esperamos a que el descriptor se escriba
             }
         }
 
@@ -155,25 +232,37 @@ class UlladaFragment : Fragment() {
 
     private fun saveToUxiaAlbum(bytes: ByteArray) {
         val filename = "UXIA_${System.currentTimeMillis()}.jpg"
+        val resolver = requireContext().contentResolver
+
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, filename)
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            // Esto crea la carpeta "UXIA" dentro de la carpeta Pictures
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/UXIA")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
         }
-        val uri = requireContext().contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+
         uri?.let { targetUri ->
-            requireContext().contentResolver.openOutputStream(targetUri).use { it?.write(bytes) }
+            resolver.openOutputStream(targetUri).use { it?.write(bytes) }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 values.clear()
                 values.put(MediaStore.Images.Media.IS_PENDING, 0)
-                requireContext().contentResolver.update(targetUri, values, null, null)
+                resolver.update(targetUri, values, null, null)
+            } else {
+                // Para versiones antiguas, forzamos el escaneo de la galería
+                val intent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
+                intent.data = targetUri
+                requireContext().sendBroadcast(intent)
             }
+
             handler.post {
                 activeDialog?.showImage(targetUri)
-                binding.btnRequestImage.text = "FER UNA ALTRA FOTO"
+                Toast.makeText(context, "Imatge desada a l'àlbum UXIA", Toast.LENGTH_SHORT).show()
             }
         }
     }

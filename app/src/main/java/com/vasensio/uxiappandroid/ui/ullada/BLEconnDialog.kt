@@ -31,7 +31,7 @@ class BLEconnDialog(
         findViewById<TextView>(R.id.tvDeviceName).text = deviceName
         findViewById<TextView>(R.id.tvDeviceAddress).text = deviceAddress
         findViewById<Button>(R.id.btnCancel).setOnClickListener { dismiss() }
-        findViewById<Button>(R.id.btnConnect).setOnClickListener { dismiss() }
+        findViewById<Button>(R.id.btnSend).setOnClickListener { dismiss() }
     }
 
     fun updateProgress(current: Int, total: Int) {
