@@ -23,6 +23,8 @@ import com.vasensio.bluetooth_list_recyclerview.BLEconnDialog
 import com.vasensio.uxiappandroid.R
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 
 class UlladaFragment : Fragment() {
     private var _binding: FragmentUlladaBinding? = null
@@ -39,6 +41,10 @@ class UlladaFragment : Fragment() {
     private val SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
     private val CHAR_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
     private val DESCRIPTOR_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    private var lastReceivedBytes: ByteArray? = null
+    private val client = okhttp3.OkHttpClient()
+
+
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentUlladaBinding.inflate(inflater, container, false)
@@ -56,7 +62,11 @@ class UlladaFragment : Fragment() {
             val manager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
             val device = manager.adapter.getRemoteDevice(mac)
 
-            activeDialog = BLEconnDialog(requireContext(), device.name ?: "ESP32", device.address)
+            // AÑADE LAS LLAVES AL FINAL:
+            activeDialog = BLEconnDialog(requireContext(), device.name ?: "ESP32", device.address) {
+                enviarImatgeAlServidor()
+            }
+
             activeDialog?.show()
 
             if (bluetoothGatt == null) {
@@ -139,7 +149,9 @@ class UlladaFragment : Fragment() {
         val manager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val device = manager.adapter.getRemoteDevice(mac)
 
-        activeDialog = BLEconnDialog(requireContext(), device.name ?: "ESP32", device.address)
+        activeDialog = BLEconnDialog(requireContext(), device.name ?: "ESP32", device.address) {
+            enviarImatgeAlServidor()
+        }
         activeDialog?.show()
 
         if (bluetoothGatt == null) {
@@ -225,20 +237,29 @@ class UlladaFragment : Fragment() {
             val rawStr = receivedData.toString("UTF-8").trim()
             val cleanBase64 = rawStr.substringAfterLast(",").trim()
             val bytes = Base64.decode(cleanBase64, Base64.DEFAULT)
-            saveToUxiaAlbum(bytes)
+
+            this.lastReceivedBytes = bytes // Última foto rebuda
+
+            handler.post {
+                // Creamos un Bitmap temporal solo para el preview del diálogo
+                val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                activeDialog?.tvImage?.setImageBitmap(bitmap)
+                activeDialog?.tvStatus?.text = "📸 Foto rebuda. Prem Enviar per desar i analitzar."
+            }
+
         } catch (e: Exception) {
             Log.e("BLE", "Error en Base64")
         }
     }
 
-    private fun saveToUxiaAlbum(bytes: ByteArray) {
+    private fun saveToUxiaAlbum(bytes: ByteArray): Uri? {
         val filename = "UXIA_${System.currentTimeMillis()}.jpg"
         val resolver = requireContext().contentResolver
+        var imageUri: Uri? = null
 
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, filename)
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            // Esto crea la carpeta "UXIA" dentro de la carpeta Pictures
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/UXIA")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
@@ -255,17 +276,89 @@ class UlladaFragment : Fragment() {
                 values.put(MediaStore.Images.Media.IS_PENDING, 0)
                 resolver.update(targetUri, values, null, null)
             } else {
-                // Para versiones antiguas, forzamos el escaneo de la galería
                 val intent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
                 intent.data = targetUri
                 requireContext().sendBroadcast(intent)
             }
+            imageUri = targetUri
+        }
+        return imageUri
+    }
 
-            handler.post {
-                activeDialog?.showImage(targetUri)
-                Toast.makeText(context, "Imatge desada a l'àlbum UXIA", Toast.LENGTH_SHORT).show()
+    private fun enviarImatgeAlServidor() {
+        val bytesToSend = lastReceivedBytes ?: run {
+            Toast.makeText(context, "No hi ha imatge per enviar", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val savedUri : Uri? = saveToUxiaAlbum(bytesToSend)
+
+        handler.post {
+            if (savedUri != null) {
+                binding.imageView2.setImageURI(null)
+                binding.imageView2.setImageURI(savedUri)
+            } else {
+                Log.e("BLE", "La URI guardada és nul·la")
             }
         }
+
+        // Fil per enviar post al servidor a través de OkHttp
+        Thread {
+            try {
+                val urlEndpoint = "https://uxia5.ieti.site/api/analitzar-imatge"
+                val base64Image = Base64.encodeToString(bytesToSend, Base64.NO_WRAP)
+
+                val json = org.json.JSONObject().apply {
+                    put("images", org.json.JSONArray().put(base64Image))
+                    put("prompt", "")
+                    put("stream", false)
+                }
+
+                val jsonString = json.toString()
+                val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+                val requestBody = jsonString.toRequestBody(mediaType)
+
+                val request = okhttp3.Request.Builder()
+                    .url(urlEndpoint)
+                    .post(requestBody)
+                    .build()
+
+                client.newCall(request).execute().use { response ->
+                    val responseData = response.body?.string()
+
+                    activity?.runOnUiThread {
+                        if (response.isSuccessful && responseData != null) {
+                            try {
+                                // Parseamos lo que el servidor ha respondido
+                                val jsonRespuesta = org.json.JSONObject(responseData)
+
+                                // Extraemos el campo "message" del JSON que pusiste
+                                val servidorMsg = jsonRespuesta.optString("message", "Imatge enviada a la IA")
+
+                                // Mostramos el Toast con el mensaje exacto del servidor
+                                Toast.makeText(context, servidorMsg, Toast.LENGTH_LONG).show()
+
+                                Log.d("API_RES", "Resposta servidor: $responseData")
+
+                            } catch (e: Exception) {
+                                Log.e("API_RES", "Error parseando JSON", e)
+                                Toast.makeText(context, "Enviat (Error en format resposta)", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Log.e("API_RES", "Error: ${response.code}")
+                            Toast.makeText(context, "Error servidor: ${response.code}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("HTTP_ERROR", "Error: ", e)
+                activity?.runOnUiThread {
+                    // Esto nos dirá si es un error de permisos, de red o de protocolo
+                    Log.e("DETALL", "Error: ${e.javaClass.simpleName} - ${e.message}", e)
+                    Toast.makeText(context, "Detall: ${e.javaClass.simpleName} - ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     @SuppressLint("MissingPermission")

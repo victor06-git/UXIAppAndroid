@@ -13,7 +13,8 @@ import com.vasensio.uxiappandroid.R
 class BLEconnDialog(
     context: Context,
     private val deviceName: String,
-    private val deviceAddress: String
+    private val deviceAddress: String,
+    private val onSendClicked: () -> Unit
 ) : Dialog(context) {
 
     lateinit var tvStatus: TextView
@@ -31,7 +32,10 @@ class BLEconnDialog(
         findViewById<TextView>(R.id.tvDeviceName).text = deviceName
         findViewById<TextView>(R.id.tvDeviceAddress).text = deviceAddress
         findViewById<Button>(R.id.btnCancel).setOnClickListener { dismiss() }
-        findViewById<Button>(R.id.btnSend).setOnClickListener { dismiss() }
+        findViewById<Button>(R.id.btnSend).setOnClickListener {
+            onSendClicked() // Llamamos al callback
+            dismiss()
+        }
 
         progressBar.isIndeterminate = false
     }
