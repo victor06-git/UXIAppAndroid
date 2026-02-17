@@ -313,36 +313,54 @@ class UlladaFragment : Fragment() {
                     put("prompt", "")
                     put("stream", false)
                 }
-
                 val jsonString = json.toString()
                 val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
                 val requestBody = jsonString.toRequestBody(mediaType)
-
                 val request = okhttp3.Request.Builder()
                     .url(urlEndpoint)
                     .post(requestBody)
                     .build()
-
                 client.newCall(request).execute().use { response ->
                     val responseData = response.body?.string()
 
                     activity?.runOnUiThread {
-                        if (response.isSuccessful && responseData != null) {
+                        if (isAdded && response.isSuccessful && responseData != null) {
                             try {
-                                // Parseamos lo que el servidor ha respondido
+                                // 1. --- AQUÍ EMPIEZA EL PARSEO DEL NUEVO JSON ---
                                 val jsonRespuesta = org.json.JSONObject(responseData)
 
-                                // Extraemos el campo "message" del JSON que pusiste
-                                val servidorMsg = jsonRespuesta.optString("message", "Imatge enviada a la IA")
+                                // Extraemos el mensaje de nivel superior
+                                val msg = jsonRespuesta.optString("message", "Processat")
 
-                                // Mostramos el Toast con el mensaje exacto del servidor
-                                Toast.makeText(context, servidorMsg, Toast.LENGTH_LONG).show()
+                                // Entramos en el objeto "data"
+                                val dataObj = jsonRespuesta.getJSONObject("data")
+                                val descripcio = dataObj.optString("description", "Sense descripció")
 
-                                Log.d("API_RES", "Resposta servidor: $responseData")
+                                // Extraemos los tags del array
+                                val tagsArray = dataObj.getJSONArray("tags")
+                                val tagsList = mutableListOf<String>()
+                                for (i in 0 until tagsArray.length()) {
+                                    tagsList.add(tagsArray.getString(i))
+                                }
+
+                                // 2. --- MOSTRAR LA INFO EN UN DIALOG ---
+                                // Creamos un texto formateado para el usuario
+                                val resumen = "Respuesta: $msg\n\n" +
+                                        "Descripció: $descripcio\n\n" +
+                                        "Tags: ${tagsList.joinToString(", ")}"
+
+                                androidx.appcompat.app.AlertDialog.Builder(requireContext())
+                                    .setTitle("Anàlisi Finalitzat")
+                                    .setMessage(resumen)
+                                    .setIcon(R.drawable.ullada_icon) // Si tienes un icono
+                                    .setPositiveButton("D'acord") { dialog, _ -> dialog.dismiss() }
+                                    .show()
+
+                                Log.d("API_RES", "Tot correcte: $responseData")
 
                             } catch (e: Exception) {
                                 Log.e("API_RES", "Error parseando JSON", e)
-                                Toast.makeText(context, "Enviat (Error en format resposta)", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Error en el format de la resposta", Toast.LENGTH_SHORT).show()
                             }
                         } else {
                             Log.e("API_RES", "Error: ${response.code}")
@@ -354,8 +372,8 @@ class UlladaFragment : Fragment() {
                 Log.e("HTTP_ERROR", "Error: ", e)
                 activity?.runOnUiThread {
                     // Esto nos dirá si es un error de permisos, de red o de protocolo
-                    Log.e("DETALL", "Error: ${e.javaClass.simpleName} - ${e.message}", e)
-                    Toast.makeText(context, "Detall: ${e.javaClass.simpleName} - ${e.message}", Toast.LENGTH_LONG).show()
+                    Log.e("DETALL", "Error de xarxa", e)
+                    Toast.makeText(context, "Error de xarxa", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
