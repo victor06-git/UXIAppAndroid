@@ -13,7 +13,8 @@ import com.vasensio.uxiappandroid.R
 class BLEconnDialog(
     context: Context,
     private val deviceName: String,
-    private val deviceAddress: String
+    private val deviceAddress: String,
+    private val onSendClicked: () -> Unit
 ) : Dialog(context) {
 
     lateinit var tvStatus: TextView
@@ -31,12 +32,28 @@ class BLEconnDialog(
         findViewById<TextView>(R.id.tvDeviceName).text = deviceName
         findViewById<TextView>(R.id.tvDeviceAddress).text = deviceAddress
         findViewById<Button>(R.id.btnCancel).setOnClickListener { dismiss() }
-        findViewById<Button>(R.id.btnSend).setOnClickListener { dismiss() }
+        findViewById<Button>(R.id.btnSend).setOnClickListener {
+            onSendClicked() // Llamamos al callback
+            dismiss()
+        }
+
+        progressBar.isIndeterminate = false
     }
 
     fun updateProgress(current: Int, total: Int) {
-        progressBar.max = if (total > 0) total else 100
-        progressBar.progress = current
+        if (total <= 0) return
+
+        val percentage = (current.toFloat() / total.toFloat() * 100).toInt()
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            progressBar.setProgress(percentage, true)
+        } else {
+            // Fallback para versiones antiguas
+            progressBar.progress = percentage
+        }
+
+        //progressBar.max = 100
+        //progressBar.progress = (current / total * 100).toInt()
         tvStatus.text = "Descarregant: $current bytes"
     }
 
