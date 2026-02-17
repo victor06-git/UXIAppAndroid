@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.util.Log
 import android.view.LayoutInflater
@@ -25,6 +26,7 @@ import java.io.ByteArrayOutputStream
 import java.util.UUID
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.Locale
 
 class UlladaFragment : Fragment() {
     private var _binding: FragmentUlladaBinding? = null
@@ -44,7 +46,7 @@ class UlladaFragment : Fragment() {
     private var lastReceivedBytes: ByteArray? = null
     private val client = okhttp3.OkHttpClient()
 
-
+    private var tts: TextToSpeech? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentUlladaBinding.inflate(inflater, container, false)
@@ -54,6 +56,14 @@ class UlladaFragment : Fragment() {
     @SuppressLint("MissingPermission")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
+        // En tu onCreateView o onViewCreated, inicialízalo:
+        tts = TextToSpeech(requireContext()) { status ->
+            if (status != TextToSpeech.ERROR) {
+                tts?.language = Locale("ca", "ES") // O Locale.getDefault() para el idioma del sistema
+            }
+        }
+
         setupUI()
 
         binding.btnRequestImage.setOnClickListener {
@@ -62,7 +72,12 @@ class UlladaFragment : Fragment() {
             val manager = requireActivity().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
             val device = manager.adapter.getRemoteDevice(mac)
 
-            // AÑADE LAS LLAVES AL FINAL:
+            // --- RESET DE DATOS AQUÍ ---
+            lastReceivedBytes = null   // Borra la referencia a la foto anterior
+            receivedData.reset()       // Limpia el flujo de bytes
+            isReceiving = false        // Resetea el estado de recepción
+            // ----------------------------
+
             activeDialog = BLEconnDialog(requireContext(), device.name ?: "ESP32", device.address) {
                 enviarImatgeAlServidor()
             }
@@ -208,23 +223,26 @@ class UlladaFragment : Fragment() {
             if (characteristic.uuid == CHAR_UUID) {
                 val data = characteristic.value
                 handler.post {
-                    // SEÑAL DE FIN [255, 255, 255, 255]
-                    if (data.size == 4 && data.all { it == (-1).toByte() }) {
-                        if (isReceiving) processFinalImage()
-                    }
-                    // SEÑAL DE INICIO (TAMAÑO)
-                    else if (!isReceiving && data.size == 4) {
+                    if (!isReceiving && data.size == 4) {
                         totalSize = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8) or
                                 ((data[2].toInt() and 0xFF) shl 16) or ((data[3].toInt() and 0xFF) shl 24)
+
                         isReceiving = true
                         receivedData.reset()
+                        lastReceivedBytes = null // Borramos la foto anterior para no repetir
+
+
                         activeDialog?.tvStatus?.text = "Rebent dades..."
                     }
-                    // DATOS (CHUNKS)
+                    // SEÑAL DE INICIO (TAMAÑO)
                     else if (isReceiving) {
-                        receivedData.write(data)
-                        activeDialog?.updateProgress(receivedData.size(), totalSize)
-                        if (receivedData.size() >= totalSize) processFinalImage()
+                        if (data.size == 4 && data.all { it == (-1).toByte() }) {
+                            processFinalImage()
+                        } else {
+                            receivedData.write(data)
+                            activeDialog?.updateProgress(receivedData.size(), totalSize)
+                            if (receivedData.size() >= totalSize) processFinalImage()
+                        }
                     }
                 }
             }
@@ -286,8 +304,9 @@ class UlladaFragment : Fragment() {
     }
 
     private fun enviarImatgeAlServidor() {
-        val bytesToSend = lastReceivedBytes ?: run {
-            Toast.makeText(context, "No hi ha imatge per enviar", Toast.LENGTH_SHORT).show()
+        val bytesToSend = lastReceivedBytes
+        if (bytesToSend == null) {
+            Toast.makeText(context, "Error: No s'ha rebut cap imagen nova", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -326,26 +345,24 @@ class UlladaFragment : Fragment() {
                     activity?.runOnUiThread {
                         if (isAdded && response.isSuccessful && responseData != null) {
                             try {
-                                // 1. --- AQUÍ EMPIEZA EL PARSEO DEL NUEVO JSON ---
                                 val jsonRespuesta = org.json.JSONObject(responseData)
 
-                                // Extraemos el mensaje de nivel superior
                                 val msg = jsonRespuesta.optString("message", "Processat")
 
-                                // Entramos en el objeto "data"
                                 val dataObj = jsonRespuesta.getJSONObject("data")
                                 val descripcio = dataObj.optString("description", "Sense descripció")
 
-                                // Extraemos los tags del array
                                 val tagsArray = dataObj.getJSONArray("tags")
                                 val tagsList = mutableListOf<String>()
                                 for (i in 0 until tagsArray.length()) {
                                     tagsList.add(tagsArray.getString(i))
                                 }
 
-                                // 2. --- MOSTRAR LA INFO EN UN DIALOG ---
-                                // Creamos un texto formateado para el usuario
-                                val resumen = "Respuesta: $msg\n\n" +
+                                val textoParaLeer = "Descripció: $descripcio. Tags: ${tagsList.joinToString(", ")}"
+
+                                tts?.speak(textoParaLeer, TextToSpeech.QUEUE_FLUSH, null, null)
+
+                                val resumen = "Resposta: $msg\n\n" +
                                         "Descripció: $descripcio\n\n" +
                                         "Tags: ${tagsList.joinToString(", ")}"
 
@@ -359,7 +376,7 @@ class UlladaFragment : Fragment() {
                                 Log.d("API_RES", "Tot correcte: $responseData")
 
                             } catch (e: Exception) {
-                                Log.e("API_RES", "Error parseando JSON", e)
+                                Log.e("API_RES", "Error parsejant JSON", e)
                                 Toast.makeText(context, "Error en el format de la resposta", Toast.LENGTH_SHORT).show()
                             }
                         } else {
@@ -386,5 +403,11 @@ class UlladaFragment : Fragment() {
             it.value = "GET_IMAGE".toByteArray()
             bluetoothGatt?.writeCharacteristic(it)
         }
+    }
+
+    override fun onDestroy() {
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
     }
 }
