@@ -3,23 +3,23 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/mobile_navigation"
-    app:startDestination="@+id/navigation_home">
+    app:startDestination="@+id/navigation_ullada">
 
     <fragment
-        android:id="@+id/navigation_home"
-        android:name="com.vasensio.uxiappandroid.ui.home.HomeFragment"
-        android:label="@string/title_home"
-        tools:layout="@layout/fragment_home" />
+        android:id="@+id/navigation_ullada"
+        android:name="com.vasensio.uxiappandroid.ui.ullada.UlladaFragment"
+        android:label="@string/title_ullada"
+        tools:layout="@layout/fragment_ullada" />
 
     <fragment
-        android:id="@+id/navigation_dashboard"
-        android:name="com.vasensio.uxiappandroid.ui.dashboard.DashboardFragment"
-        android:label="@string/title_dashboard"
-        tools:layout="@layout/fragment_dashboard" />
+        android:id="@+id/navigation_historial"
+        android:name="com.vasensio.uxiappandroid.ui.historial.HistorialFragment"
+        android:label="@string/title_historial"
+        tools:layout="@layout/fragment_historial" />
 
     <fragment
-        android:id="@+id/navigation_notifications"
-        android:name="com.vasensio.uxiappandroid.ui.notifications.NotificationsFragment"
-        android:label="@string/title_notifications"
-        tools:layout="@layout/fragment_notifications" />
+        android:id="@+id/navigation_ajustos"
+        android:name="com.vasensio.uxiappandroid.ui.ajustos.AjustosFragment"
+        android:label="@string/title_ajustos"
+        tools:layout="@layout/fragment_ajustos" />
 </navigation>
